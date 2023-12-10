@@ -1,3 +1,4 @@
 # Projet_GPU
 ## Version AVX2: 
-La version SIMD marche bien(Elle donne de bonnes résultats), mais elle nécessite encore plus d'optimisation pour gagner en temps.
+- La fonction **func_simd_avx2** est la fonction optimisée est qui marche le mieux.
+- La fonction **naive_stencil_dunc1** est la fonction optimisée(Fusion des deux boucles sur x et y).
