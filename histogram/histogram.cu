@@ -411,15 +411,15 @@ static void naive_compute_histogram(const ELEMENT_TYPE *array, int *histogram, s
 }
 
 //Appelée depuis le CPU mais executée sur le GPU__Déclaration du kernel Cuda
-__global__ void compute_histogram_kernel(const ELEMENT_TYPE *array, int *histogram, const ELEMENT_TYPE *bounds, int array_len, int nb_bins) {
+__global__ void compute_histogram_kernel(const ELEMENT_TYPE *array, int *histogram, const ELEMENT_TYPE *bounds) {
 
     int i = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (i < array_len) {
+    if (i < p_settings->array_len) {
 
         ELEMENT_TYPE value = array[i];
 
-        for (int j = 0; j < nb_bins; j++) {
+        for (int j = 0; j < p_settings->nb_bins; j++) {
 
             if (value >= bounds[j] && value < bounds[j + 1]) {
 
@@ -431,13 +431,15 @@ __global__ void compute_histogram_kernel(const ELEMENT_TYPE *array, int *histogr
     }
 }
 
-static void cuda_compute_histogram(const ELEMENT_TYPE *array, int *histogram, struct s_settings *p_settings) 
+static void cuda_compute_histogram(void) 
 {
     //Intialiser l'histogramme à zéro
         memset(histogram, 0, p_settings->nb_bins * sizeof(*histogram));
 
         ELEMENT_TYPE *bounds = NULL;
+
         bounds = (float *)malloc((p_settings->nb_bins + 1) * sizeof(*bounds));
+
         if (bounds == NULL)
         {
                 PRINT_ERROR("memory allocation failed");
@@ -449,9 +451,7 @@ static void cuda_compute_histogram(const ELEMENT_TYPE *array, int *histogram, st
 
                 bounds[0] = offset;
 
-                //On peut paralléliser avec Openmp
                 int j;
-                //#pragma omp parallel for
                 for (j = 0; j < p_settings->nb_bins; j++)
                 {
                         bounds[j + 1] = offset + (j + 1) * scale / p_settings->nb_bins;
@@ -462,9 +462,9 @@ static void cuda_compute_histogram(const ELEMENT_TYPE *array, int *histogram, st
         int *gpu_histogram;
 
         //Allouer la mémoire sur le GPU
-        cudaMalloc((void **)&gpu_array, p_settings ->array_len * sizeof(ELEMENT_TYPE));
-        cudaMalloc((void**)&gpu_bounds, (p_settings->nb_bins + 1) * sizeof(ELEMENT_TYPE));
-        cudaMalloc((void**)&gpu_histogram, p_settings->nb_bins * sizeof(int));
+        cudaMalloc(&gpu_array, p_settings ->array_len * sizeof(ELEMENT_TYPE));
+        cudaMalloc(&gpu_bounds, (p_settings->nb_bins + 1) * sizeof(ELEMENT_TYPE));
+        cudaMalloc(&gpu_histogram, p_settings->nb_bins * sizeof(int));
 
         //Copier les données depuis le CPU vers le GPU
         cudaMemcpy(gpu_array, array, p_settings->array_len * sizeof(ELEMENT_TYPE), cudaMemcpyHostToDevice);
@@ -475,8 +475,10 @@ static void cuda_compute_histogram(const ELEMENT_TYPE *array, int *histogram, st
         //Appeler le kernel cuda
         compute_histogram_kernel<<<num_blocks, THREAD_PER_BLOCK>>>(gpu_array, gpu_histogram, gpu_bounds, p_settings->array_len, p_settings->nb_bins);
 
-        //Copierles résultats depuis le GPU vers le CPU
+        //Copier les résultats depuis le GPU vers le CPU
         cudaMemcpy(histogram, gpu_histogram, p_settings->nb_bins * sizeof(int), cudaMemcpyDeviceToHost);
+        for (i = 0; i < p_settings->nb_bins; i++)
+                printf("%f\n", gpu_histogram[i]);
 
         //Libérer la mémoire allouée sur le GPU
         cudaFree(gpu_array);
