@@ -418,12 +418,13 @@ __global__ void compute_histogram_kernel(const ELEMENT_TYPE *array, int *histogr
     if (i < array_len) {
 
         ELEMENT_TYPE value = array[i];
+        int j;
 
-        for (int j = 0; j < nb_bins; j++) {
+        for (j = 0; j < nb_bins; j++) {
 
             if (value >= bounds[j] && value < bounds[j + 1]) {
 
-                atomicAdd(&histogram[j], 1);
+                histogram[j]++;
 
                 break;
             }
@@ -437,7 +438,7 @@ static void cuda_compute_histogram(const ELEMENT_TYPE *array, int *histogram, st
         memset(histogram, 0, p_settings->nb_bins * sizeof(*histogram));
 
         ELEMENT_TYPE *bounds = NULL;
-        bounds = (float *)malloc((p_settings->nb_bins + 1) * sizeof(*bounds));
+        bounds = (ELEMENT_TYPE *)malloc((p_settings->nb_bins + 1) * sizeof(*bounds));
         if (bounds == NULL)
         {
                 PRINT_ERROR("memory allocation failed");
@@ -461,14 +462,15 @@ static void cuda_compute_histogram(const ELEMENT_TYPE *array, int *histogram, st
         ELEMENT_TYPE *gpu_array, *gpu_bounds;
         int *gpu_histogram;
 
-        //Allouer la mémoire sur le GPU
-        cudaMalloc((void **)&gpu_array, p_settings ->array_len * sizeof(ELEMENT_TYPE));
-        cudaMalloc((void**)&gpu_bounds, (p_settings->nb_bins + 1) * sizeof(ELEMENT_TYPE));
-        cudaMalloc((void**)&gpu_histogram, p_settings->nb_bins * sizeof(int));
+        // Allouer la mémoire sur le GPU
+        cudaMalloc((void **)&gpu_array, p_settings->array_len * sizeof(ELEMENT_TYPE));
+        cudaMalloc((void **)&gpu_bounds, (p_settings->nb_bins + 1) * sizeof(ELEMENT_TYPE));
+        cudaMalloc((void **)&gpu_histogram, p_settings->nb_bins * sizeof(int));  // Change to int
 
-        //Copier les données depuis le CPU vers le GPU
+        // Copier les données depuis le CPU vers le GPU
         cudaMemcpy(gpu_array, array, p_settings->array_len * sizeof(ELEMENT_TYPE), cudaMemcpyHostToDevice);
         cudaMemcpy(gpu_bounds, bounds, (p_settings->nb_bins + 1) * sizeof(ELEMENT_TYPE), cudaMemcpyHostToDevice);
+
 
         int num_blocks = (p_settings->array_len + THREAD_PER_BLOCK - 1) / THREAD_PER_BLOCK;
 
