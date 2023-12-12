@@ -382,7 +382,6 @@ static void naive_compute_histogram(const ELEMENT_TYPE *array, int *histogram, s
 
                 //On peut paralléliser avec Openmp
                 int j;
-                //#pragma omp parallel for
                 for (j = 0; j < p_settings->nb_bins; j++)
                 {
                         bounds[j + 1] = offset + (j + 1) * scale / p_settings->nb_bins;
