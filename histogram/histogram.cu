@@ -65,7 +65,8 @@ static void usage(void)
 static void init_settings(struct s_settings **pp_settings)
 {
         assert(*pp_settings == NULL);
-        struct s_settings *p_settings = calloc(1, sizeof(*p_settings));
+
+        struct s_settings *p_settings = (struct s_settings *)calloc(1, sizeof(struct s_settings));        
         if (p_settings == NULL)
         {
                 PRINT_ERROR("memory allocation failed");
@@ -123,9 +124,9 @@ static void parse_cmd_line(int argc, char *argv[], struct s_settings *p_settings
                         {
                                 usage();
                         }
-                        double value = atof(argv[i]);
-                        int class = fpclassify(value);
-                        if ((class != FP_NORMAL) && (class != FP_ZERO))
+                        int value = atof(argv[i]);
+                        int class_value =fpclassify(value);
+                        if ((class_value != FP_NORMAL) && (class_value != FP_ZERO))
                         {
                                 fprintf(stderr, "invalid LOWER_BOUND argument\n");
                                 exit(EXIT_FAILURE);
@@ -140,8 +141,8 @@ static void parse_cmd_line(int argc, char *argv[], struct s_settings *p_settings
                                 usage();
                         }
                         double value = atof(argv[i]);
-                        int class = fpclassify(value);
-                        if ((class != FP_NORMAL) && (class != FP_ZERO))
+                        int class_value = fpclassify(value);
+                        if ((class_value != FP_NORMAL) && (class_value != FP_ZERO))
                         {
                                 fprintf(stderr, "invalid UPPER_BOUND argument\n");
                                 exit(EXIT_FAILURE);
@@ -201,7 +202,7 @@ static void delete_settings(struct s_settings **pp_settings)
 static void allocate_array(ELEMENT_TYPE **p_array, struct s_settings *p_settings)
 {
         assert(*p_array == NULL);
-        ELEMENT_TYPE *array = calloc(p_settings->array_len, sizeof(*array));
+        ELEMENT_TYPE *array = (float *)calloc(p_settings->array_len, sizeof(*array));
         if (array == NULL)
         {
                 PRINT_ERROR("memory allocation failed");
@@ -272,7 +273,7 @@ static void write_array_to_file(FILE *file, const ELEMENT_TYPE *array, struct s_
 static void allocate_histogram(int **p_histogram, struct s_settings *p_settings)
 {
         assert(*p_histogram == NULL);
-        int *histogram = calloc(p_settings->nb_bins, sizeof(*histogram));
+        int *histogram =(int *)calloc(p_settings->nb_bins, sizeof(*histogram));
         if (histogram == NULL)
         {
                 PRINT_ERROR("memory allocation failed");
@@ -362,6 +363,53 @@ static void print_csv_header(void)
         printf("\n");
 }
 
+static void naive_compute_histogram(const ELEMENT_TYPE *array, int *histogram, struct s_settings *p_settings)
+{
+        //Intialiser l'histogramme à zéro
+        memset(histogram, 0, p_settings->nb_bins * sizeof(*histogram));
+
+        ELEMENT_TYPE *bounds = NULL;
+        bounds = (float *)malloc((p_settings->nb_bins + 1) * sizeof(*bounds));
+        if (bounds == NULL)
+        {
+                PRINT_ERROR("memory allocation failed");
+        }
+
+        {
+                const ELEMENT_TYPE offset = p_settings->lower_bound;
+                const ELEMENT_TYPE scale = p_settings->upper_bound - p_settings->lower_bound;
+
+                bounds[0] = offset;
+
+                //On peut paralléliser avec Openmp
+                int j;
+                //#pragma omp parallel for
+                for (j = 0; j < p_settings->nb_bins; j++)
+                {
+                        bounds[j + 1] = offset + (j + 1) * scale / p_settings->nb_bins;
+                }
+        }
+
+        
+        int i;
+        for (i = 0; i < p_settings->array_len; i++)
+        {
+                ELEMENT_TYPE value = array[i];
+
+                int j;
+                for (j = 0; j < p_settings->nb_bins; j++)
+                {
+                        if (value >= bounds[j] && value < bounds[j + 1])
+                        {
+                                histogram[j]++;
+                                break;
+                        }
+                }
+        }
+
+        free(bounds);
+}
+
 //Appelée depuis le CPU mais executée sur le GPU__Déclaration du kernel Cuda
 __global__ void compute_histogram_kernel(const ELEMENT_TYPE *array, int *histogram, const ELEMENT_TYPE *bounds, int array_len, int nb_bins) {
 
@@ -389,7 +437,7 @@ static void cuda_compute_histogram(const ELEMENT_TYPE *array, int *histogram, st
         memset(histogram, 0, p_settings->nb_bins * sizeof(*histogram));
 
         ELEMENT_TYPE *bounds = NULL;
-        bounds = malloc((p_settings->nb_bins + 1) * sizeof(*bounds));
+        bounds = (float *)malloc((p_settings->nb_bins + 1) * sizeof(*bounds));
         if (bounds == NULL)
         {
                 PRINT_ERROR("memory allocation failed");
@@ -415,25 +463,25 @@ static void cuda_compute_histogram(const ELEMENT_TYPE *array, int *histogram, st
 
         //Allouer la mémoire sur le GPU
         cudaMalloc((void **)&gpu_array, p_settings ->array_len * sizeof(ELEMENT_TYPE));
-        cudaMalloc((void**)&d_bounds, (p_settings->nb_bins + 1) * sizeof(ELEMENT_TYPE));
-        cudaMalloc((void**)&d_histogram, p_settings->nb_bins * sizeof(int));
+        cudaMalloc((void**)&gpu_bounds, (p_settings->nb_bins + 1) * sizeof(ELEMENT_TYPE));
+        cudaMalloc((void**)&gpu_histogram, p_settings->nb_bins * sizeof(int));
 
         //Copier les données depuis le CPU vers le GPU
         cudaMemcpy(gpu_array, array, p_settings->array_len * sizeof(ELEMENT_TYPE), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_bounds, bounds, (p_settings->nb_bins + 1) * sizeof(ELEMENT_TYPE), cudaMemcpyHostToDevice);
+        cudaMemcpy(gpu_bounds, bounds, (p_settings->nb_bins + 1) * sizeof(ELEMENT_TYPE), cudaMemcpyHostToDevice);
 
-        int num_blocks = (p_settings->array_len + threads_per_block - 1) / threads_per_block;
+        int num_blocks = (p_settings->array_len + THREAD_PER_BLOCK - 1) / THREAD_PER_BLOCK;
 
         //Appeler le kernel cuda
-        compute_histogram_kernel<<<num_blocks, threads_per_block>>>(gpu_array, gpu_histogram, gpu_bounds, p_settings->array_len, p_settings->nb_bins);
+        compute_histogram_kernel<<<num_blocks, THREAD_PER_BLOCK>>>(gpu_array, gpu_histogram, gpu_bounds, p_settings->array_len, p_settings->nb_bins);
 
         //Copierles résultats depuis le GPU vers le CPU
         cudaMemcpy(histogram, gpu_histogram, p_settings->nb_bins * sizeof(int), cudaMemcpyDeviceToHost);
 
         //Libérer la mémoire allouée sur le GPU
-        cudaFree(d_array);
-        cudaFree(d_bounds);
-        cudaFree(d_histogram);
+        cudaFree(gpu_array);
+        cudaFree(gpu_bounds);
+        cudaFree(gpu_histogram);
 
         // Libérer la mémoire allouée sur le CPU
         free(bounds);
@@ -443,8 +491,9 @@ static void cuda_compute_histogram(const ELEMENT_TYPE *array, int *histogram, st
 
 static void run(const ELEMENT_TYPE *array, int *run_histogram, struct s_settings *p_settings)
 {
-        mp_compute_histogram(array, run_histogram, p_settings);
+        //mp_compute_histogram(array, run_histogram, p_settings);
         //naive_compute_histogram(array, run_histogram, p_settings);
+        cuda_compute_histogram(array, run_histogram, p_settings);
         if (p_settings->enable_output)
         {
                 FILE *file = fopen("run_histogram.csv", "w");
