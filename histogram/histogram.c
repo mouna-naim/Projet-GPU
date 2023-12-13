@@ -382,7 +382,6 @@ static void naive_compute_histogram(const ELEMENT_TYPE *array, int *histogram, s
 
                 //On peut paralléliser avec Openmp
                 int j;
-                //#pragma omp parallel for
                 for (j = 0; j < p_settings->nb_bins; j++)
                 {
                         bounds[j + 1] = offset + (j + 1) * scale / p_settings->nb_bins;
@@ -460,7 +459,61 @@ static void mp_compute_histogram(const ELEMENT_TYPE *array, int *histogram, stru
         free(bounds);
 }
 //Version Cuda
+//Appelée depuis le CPU mais executée sur le GPU__Déclaration du kernel Cuda
+__global__ void compute_histogram_kernel(const ELEMENT_TYPE *array, int *histogram, const ELEMENT_TYPE *bounds, struct s_settings *p_settings ) {
 
+    int j = blockIdx.x;
+    const ELEMENT_TYPE offset = p_settings->lower_bound;
+    const ELEMENT_TYPE scale = p_settings->upper_bound - p_settings->lower_bound;
+
+    bounds[0] = offset;
+    if (j<p_settings->nb_bins) bounds[j + 1] = offset + (j + 1) * scale / p_settings->nb_bins;
+
+}
+
+static void cuda_compute_histogram(void) 
+{
+    //Intialiser l'histogramme à zéro
+        memset(histogram, 0, p_settings->nb_bins * sizeof(*histogram));
+
+        ELEMENT_TYPE *bounds = NULL, *gpu_bounds;
+
+        bounds = (float *)malloc((p_settings->nb_bins + 1) * sizeof(*bounds));
+
+        if (bounds == NULL)
+        {
+                PRINT_ERROR("memory allocation failed");
+        }
+
+        cudaMalloc(&gpu_bounds, (p_settings->nb_bins + 1) * sizeof(ELEMENT_TYPE));
+        cudaMemcpy(gpu_bounds, bounds, (p_settings->nb_bins + 1) * sizeof(ELEMENT_TYPE), cudaMemcpyHostToDevice);
+
+        compute_histogram_kernel<<<(p_settings->nb_bins + 1),1>>>(const ELEMENT_TYPE *array, int *histogram, const ELEMENT_TYPE *bounds, struct s_settings *p_settings);
+        cudaMemcpy(bounds, gpu_bounds, (p_settings->nb_bins + 1),cudaMemcpyDeviceToHost);
+
+        cudaFree(gpu_bounds);
+
+        int i;
+        for (i = 0; i < p_settings->array_len; i++)
+        {
+                ELEMENT_TYPE value = array[i];
+
+                int j;
+                for (j = 0; j < p_settings->nb_bins; j++)
+                {
+                        if (value >= bounds[j] && value < bounds[j + 1])
+                        {
+                                histogram[j]++;
+                                break;
+                        }
+                }
+        }
+
+
+        // Libérer la mémoire allouée sur le CPU
+        free(bounds);
+
+}
 
 static void run(const ELEMENT_TYPE *array, int *run_histogram, struct s_settings *p_settings)
 {
