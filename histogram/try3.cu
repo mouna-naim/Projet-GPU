@@ -3,7 +3,7 @@
 #include <cuda.h>
 #include <stdlib.h>
 //#include <helper_cuda.h>
-#define ELEMENT_TYPE float  // Assurez-vous que cela correspond à la définition dans votre programme principal
+#define ELEMENT_TYPE float  
 
 // Kernel défini dans votre code
 __global__ void compute_histogram_kernel(ELEMENT_TYPE *bounds, const int nb_bins, const ELEMENT_TYPE lower_bound, const ELEMENT_TYPE upper_bound) {
@@ -41,7 +41,7 @@ void test_compute_histogram_kernel() {
     // Appel du kernel
     compute_histogram_kernel<<<blocksPerGrid, threadsPerBlock>>>(gpu_bounds, nb_bins, lower_bound, upper_bound);
 
-    // Attendez que le GPU finisse
+    // Attendre que le gpu fini son calcul
     cudaDeviceSynchronize();
 
     // Copie des résultats du GPU vers le CPU
