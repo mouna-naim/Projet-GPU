@@ -5,14 +5,15 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <immintrin.h>
-#include <omp.h>
+#include <starpu.h>
+// Nombre de parts a définir ici si on le mets pas en arguments
+#define DEFAULT_NB_PARTS 12
+#define DEFAULT_VERIF 1
 #define ELEMENT_TYPE float
-
-#define DEFAULT_MESH_WIDTH 2 //10
-#define DEFAULT_MESH_HEIGHT 21 //7
-#define DEFAULT_NB_ITERATIONS 100
-#define DEFAULT_NB_REPEAT 10
+#define DEFAULT_MESH_WIDTH 2000
+#define DEFAULT_MESH_HEIGHT 1000
+#define DEFAULT_NB_ITERATIONS 10
+#define DEFAULT_NB_REPEAT 1
 
 #define STENCIL_WIDTH 3
 #define STENCIL_HEIGHT 3
@@ -22,7 +23,6 @@
 #define LEFT_BOUNDARY_VALUE -10
 #define RIGHT_BOUNDARY_VALUE -5
 
-#define MAX_DISPLAY_COLUMNS 20
 #define MAX_DISPLAY_COLUMNS 20
 #define MAX_DISPLAY_LINES 100
 
@@ -40,16 +40,28 @@ enum e_initial_mesh_type
         initial_mesh_zero = 1,
         initial_mesh_random = 2
 };
-
+enum v_version
+{
+	naive = 1,
+	starpu = 2,
+};
 struct s_settings
 {
         int mesh_width;
         int mesh_height;
         enum e_initial_mesh_type initial_mesh_type;
+        //_____________
+
+        enum v_version vcode;
+        int parts;
+        int verif;
+
+        //______________
         int nb_iterations;
         int nb_repeat;
         int enable_output;
         int enable_verbose;
+
 };
 
 #define PRINT_ERROR(MSG)                                                    \
@@ -79,6 +91,11 @@ static void usage(void)
         fprintf(stderr, "    --nb-repeat NB_REPEAT\n");
         fprintf(stderr, "    --output\n");
         fprintf(stderr, "    --verbose\n");
+        //La verification permet de valider les données avec la fonction naive mettez non pour calculer la vitesse
+        fprintf(stderr, "    --verification <1|0>\n");
+        fprintf(stderr, "    --taskpart NB_PARTS\n");
+        fprintf(stderr, "    --version <naive|starpu>\n");
+        //_____________________
         fprintf(stderr, "\n");
         exit(EXIT_FAILURE);
 }
@@ -98,6 +115,11 @@ static void init_settings(struct s_settings **pp_settings)
         p_settings->nb_repeat = DEFAULT_NB_REPEAT;
         p_settings->enable_verbose = 0;
         p_settings->enable_output = 0;
+        //___________________
+        p_settings->parts = DEFAULT_NB_PARTS;
+        p_settings->verif =DEFAULT_VERIF;
+        p_settings->vcode = starpu;
+        //______________________
         *pp_settings = p_settings;
 }
 
@@ -136,6 +158,64 @@ static void parse_cmd_line(int argc, char *argv[], struct s_settings *p_settings
                         }
                         p_settings->mesh_height = value;
                 }
+
+
+                //______________ mes modifs_____________________
+                else if (strcmp(argv[i], "--taskpart") == 0)
+                {
+                        i++;
+                        if (i >= argc)
+                        {
+                                usage();
+                        }
+                        int value = atoi(argv[i]);
+                        if (value < 1)
+                        {
+                                fprintf(stderr, "Nombre de parts invalide\n");
+                                exit(EXIT_FAILURE);
+                        }
+                        p_settings->parts = value;
+                }
+
+                else if (strcmp(argv[i], "--verification") == 0)
+                {
+                        i++;
+                        if (i >= argc)
+                        {
+                                usage();
+                        }
+                        int value = atoi(argv[i]);
+                        if ((value != 1)   && (value != 0)  )
+                        {
+                                fprintf(stderr, "Verification invalide mettez 1 pour verifier 0 sinon\n");
+                                exit(EXIT_FAILURE);
+                        }
+                        p_settings->verif = value;
+                }
+                else if (strcmp(argv[i], "--version") == 0)
+                {
+                        i++;
+                        if (strcmp(argv[i], "starpu") == 0)
+			{
+				p_settings->vcode = starpu;
+			}
+			else if (strcmp(argv[i], "naive") == 0)
+			{
+				p_settings->vcode = naive;
+			}
+			else
+			{
+				fprintf(stderr, "La version est invalide\n");
+				exit(EXIT_FAILURE);
+			}
+                }
+
+
+
+
+
+
+
                 else if (strcmp(argv[i], "--initial-mesh") == 0)
                 {
                         i++;
@@ -397,7 +477,8 @@ static void write_mesh_to_file(FILE *file, const ELEMENT_TYPE *p_mesh, struct s_
         }
 }
 
-//La fonction naïve originale
+
+
 static void naive_stencil_func(ELEMENT_TYPE *p_mesh, struct s_settings *p_settings)
 {
         const int margin_x = (STENCIL_WIDTH - 1) / 2;
@@ -406,18 +487,16 @@ static void naive_stencil_func(ELEMENT_TYPE *p_mesh, struct s_settings *p_settin
         int y;
 
         ELEMENT_TYPE *p_temporary_mesh = malloc(p_settings->mesh_width * p_settings->mesh_height * sizeof(*p_mesh));
-        
         for (x = margin_x; x < p_settings->mesh_width - margin_x; x++)
         {
                 for (y = margin_y; y < p_settings->mesh_height - margin_y; y++)
                 {
-
                         ELEMENT_TYPE value = p_mesh[y * p_settings->mesh_width + x];
                         int stencil_x, stencil_y;
                         for (stencil_x = 0; stencil_x < STENCIL_WIDTH; stencil_x++)
                         {
                                 for (stencil_y = 0; stencil_y < STENCIL_HEIGHT; stencil_y++)
-                                { 
+                                {
                                         value +=
                                             p_mesh[(y + stencil_y - margin_y) * p_settings->mesh_width + (x + stencil_x - margin_x)] * stencil_coefs[stencil_y * STENCIL_WIDTH + stencil_x];
                                 }
@@ -425,7 +504,7 @@ static void naive_stencil_func(ELEMENT_TYPE *p_mesh, struct s_settings *p_settin
                         p_temporary_mesh[y * p_settings->mesh_width + x] = value;
                 }
         }
-        
+
         for (x = margin_x; x < p_settings->mesh_width - margin_x; x++)
         {
                 for (y = margin_y; y < p_settings->mesh_height - margin_y; y++)
@@ -433,334 +512,213 @@ static void naive_stencil_func(ELEMENT_TYPE *p_mesh, struct s_settings *p_settin
                         p_mesh[y * p_settings->mesh_width + x] = p_temporary_mesh[y * p_settings->mesh_width + x];
                 }
         }
-}
-
-/*____________________Vesrion simplifiée: Simplification des boucles for(Changer les deux boucles for x et for y par seuelement for Ig)____________________________*/
-static void optimized_stencil_func(ELEMENT_TYPE *p_mesh, struct s_settings *p_settings)
-{
-        const int margin_x = (STENCIL_WIDTH - 1) / 2;
-        const int margin_y = (STENCIL_HEIGHT - 1) / 2;
-        
-
-        //Simplification des boucles
-
-        int size_temp = p_settings->mesh_width * p_settings->mesh_height * sizeof(*p_mesh);
-
-        ELEMENT_TYPE *p_temporary_mesh = malloc(size_temp);
-
-
-         
-        //Indice de départ de la boucle 
-        const int beg = margin_x + margin_y * p_settings->mesh_width;
-
-        //Indice final de la boucle
-        const int end =  p_settings->mesh_width * (p_settings->mesh_height - margin_y) - margin_x; 
-
-        int Ig;
-
-        for (Ig = beg ; Ig < end ; Ig++)
-        {
-
-            int r = Ig % p_settings->mesh_width;
-
-            if (r > margin_x-1 && r < p_settings->mesh_width - margin_x)
-
-            {
-            ELEMENT_TYPE value = p_mesh[Ig];
-            
-            int stencil_x, stencil_y;
-
-            for (stencil_x = 0; stencil_x < STENCIL_WIDTH; stencil_x++)
-                {
-                    for (stencil_y = 0; stencil_y < STENCIL_HEIGHT; stencil_y++)
-                        { 
-                            value +=
-                                    p_mesh[(stencil_y - margin_y) * p_settings->mesh_width + (stencil_x - margin_x) + Ig] * stencil_coefs[stencil_y * STENCIL_WIDTH + stencil_x];
-                        }
-                }
-                p_temporary_mesh[Ig] = value;
-                
-            }
-        }
-        
-
-        for (Ig = beg ; Ig < end ; Ig++)
-        {
-                int r = Ig  % p_settings->mesh_width;
-                if (r > margin_x-1 && r < p_settings->mesh_width - margin_x)
-                {
-                p_mesh[Ig] = p_temporary_mesh[Ig];
-                }
-        }
-
-        
         free(p_temporary_mesh);
 }
 
 
-/*_____________!!!!!!!!!!!!!!!!!!!!!!!!! Version SIMD AVX2 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!_________*/
-/*___________Dans cette version, il faut que la condition (end-beg) % (REG_NB_ELEMENTS) == 0 soit vérifiée, le width * height doit être égale divisible par 2____________*/
 
-//Size of bytes of a SIMD register
-#define REG_BYTES (sizeof(__m256))
-//Number of elements of a SIMD register
-#define REG_NB_ELEMENTS (REG_BYTES / sizeof(float))
-__attribute__((noinline)) void simd_avx2(ELEMENT_TYPE *p_mesh, struct s_settings *p_settings)
+
+
+
+//____________________________________Partie StarPu _____________________________________________________________________________________
+
+
+
+
+// dans cette partie on a optimisé la fonction naive_stencil pour améliorer le calcul d'un premier lieu et pour mieux facilite le parcour de notre boucle
+
+// On a réussi a optimiser mathématiquement le parcour de nos valeur en jouant sur le reste du division euclidienne
+
+// Notre méthode sera mieux détaillé lors de la présentation
+// p_temporary mesh contient que les valeurs qui se calcul dans notre boucle d'origine donc elle est moins grande que p_mesh
+//On applique un filtre à p_temporary_mesh pour le diviser sur plusieurs blocs puis on applique cette fonction sur chaque bloc où on stoque les valeurs à p_temp_mesh puis on les redonne apres à p_mesh
+
+//On a pensé a appliquer le filtre block_shadow sur p_mesh pour eviter les conflits lors de la lecture des valeurs de cette matrice
+//mais les performances ont été meilleurs quand on laisse p_mesh en mode STARPU_R que en le divisant
+
+
+
+// Definition de la fonction de base qui calcul les blocs diviser par le filtre StarPu
+void operation(ELEMENT_TYPE *p_temporary_mesh, ELEMENT_TYPE *p_mesh, struct s_settings *p_settings, int len)
 {
-        const int margin_x = (STENCIL_WIDTH - 1) / 2;
-        const int margin_y = (STENCIL_HEIGHT - 1) / 2;
-        
 
-        //Simplification des boucles
-
-        int size_temp = p_settings->mesh_width * p_settings->mesh_height * sizeof(*p_mesh);
-
-        ELEMENT_TYPE *p_temporary_mesh = malloc(size_temp);
-
-
-        //Fusionner les deux boucles en une seule
-        const int beg = margin_x + margin_y * p_settings->mesh_width;
-        const int end =  p_settings->mesh_width * (p_settings->mesh_height - margin_y) - margin_x; 
-
-        int Ig;
-
-        if( (end-beg) % (REG_NB_ELEMENTS) == 0)
-        {
-
-        for (Ig = beg ; Ig < end ; Ig+=REG_NB_ELEMENTS)
-        {
-
-            int r = Ig % p_settings->mesh_width;
-
-            if (r > margin_x-1 && r < p_settings->mesh_width - margin_x)
-
-            {
-
-            __m256 reg_value = _mm256_loadu_ps(&p_mesh[Ig]);
-            
-            int stencil_x, stencil_y;
-
-            for (stencil_x = 0; stencil_x < STENCIL_WIDTH; stencil_x++)
-                {
-                    for (stencil_y = 0; stencil_y < STENCIL_HEIGHT; stencil_y++)
-                        { 
-                            __m256 reg_p_mesh;
-
-                            __m256 reg_stencil_coefs;
-
-                            reg_p_mesh = _mm256_loadu_ps(&p_mesh[(stencil_y - margin_y) * p_settings->mesh_width + (stencil_x - margin_x) + Ig]); 
-
-                            reg_stencil_coefs= _mm256_set1_ps(stencil_coefs[stencil_y * STENCIL_WIDTH + stencil_x]);
-
-                            __m256 reg_value2 = _mm256_mul_ps(reg_stencil_coefs, reg_p_mesh);
-
-                            reg_value = _mm256_add_ps(reg_value, reg_value2);
-
-                        }
-                }
-                 _mm256_storeu_ps(&p_temporary_mesh[Ig], reg_value);
-                
-
-               
-            }
-        }
-        }
-
-        for (Ig = beg ; Ig < end ; Ig++)
-        {
-                int r = Ig % p_settings->mesh_width;
-
-                if (r > margin_x-1 && r < p_settings->mesh_width - margin_x)
-                {
-                p_mesh[Ig] = p_temporary_mesh[Ig];
-                }
-        }
-
-        
-        free(p_temporary_mesh);
-}
-
-
-//_____________!!DANS cette version, le width * height ne doit pas forcément être égale divisible par RG_NB_ELEMENTS!!______________ 
-__attribute__((noinline)) void func_simd_avx2(ELEMENT_TYPE *p_mesh, struct s_settings *p_settings) {
-
+    // On commence par definir nos variables    
     const int margin_x = (STENCIL_WIDTH - 1) / 2;
     const int margin_y = (STENCIL_HEIGHT - 1) / 2;
-    
-    //Définir la taille du tableau p_temporary_mesh
-    int size_temp = p_settings->mesh_width * p_settings->mesh_height * sizeof(*p_mesh);
-
-    //Allocation de la mémoire pour le tableau p_temporary_mesh
-    ELEMENT_TYPE *p_temporary_mesh = malloc(size_temp);
-
-    //Indice de début de la boucle for 
     const int beg = margin_x + margin_y * p_settings->mesh_width;
-
-    //Indice final pour la boucle for
-    const int end = p_settings->mesh_width * (p_settings->mesh_height - margin_y) - margin_x;
-
-    int Ig;
-
-    // Boucle vectorisée
-
-    for (Ig = beg; Ig < end ; Ig += REG_NB_ELEMENTS) {
-
-        //Calcul du reste de la division euclidienne de Ig par mesh_width
-        int r = Ig % p_settings->mesh_width;
-
-        if (r > margin_x - 1 && r < p_settings->mesh_width - margin_x) {
-            
-            //Définir un registre pour la variable value 
-            __m256 reg_value = _mm256_loadu_ps(&p_mesh[Ig]);
-
-            for (int stencil_x = 0; stencil_x < STENCIL_WIDTH; stencil_x++) {
-
-                for (int stencil_y = 0; stencil_y < STENCIL_HEIGHT; stencil_y++) {
-
-                    //Loader p_mesh dans reg_p_mesh
-                    __m256 reg_p_mesh = _mm256_loadu_ps(&p_mesh[(stencil_y - margin_y) * p_settings->mesh_width + (stencil_x - margin_x) + Ig]);
-                    
-                    //Remplir la totalité du reg_stencil_coefs par stencil_coefs[..]
-                    __m256 reg_stencil_coefs = _mm256_set1_ps(stencil_coefs[stencil_y * STENCIL_WIDTH + stencil_x]);
-
-                    //Multiplier les deux registres 
-                    __m256 reg_value2 = _mm256_mul_ps(reg_stencil_coefs, reg_p_mesh);
-                    
-                    //Ajouter reg_value2 à reg_value 
-                    reg_value = _mm256_add_ps(reg_value, reg_value2);
-                }
-            }
-
-            //Stocker reg_value dans temporary_mesh
-            _mm256_storeu_ps(&p_temporary_mesh[Ig], reg_value);
-        }
-    }
-
-     
-     
-    // Et si (end-beg) n'est pas divisible par REG_NB_ELEMENTS? 
-    //Cette boucle effectue le calcul de manière séquentielle sur le reste du tableau quand la condition n'est pas vérifiée
-
-     int h = (end - beg) % REG_NB_ELEMENTS;
-
-    for (Ig=end-h; Ig < end; Ig++) {
-
-        int r = Ig % p_settings->mesh_width;
-
-        if (r > margin_x - 1 && r < p_settings->mesh_width - margin_x) {
-
-            ELEMENT_TYPE sum = p_mesh[Ig];
-
-            for (int stencil_x = 0; stencil_x < STENCIL_WIDTH; stencil_x++) {
-
-                for (int stencil_y = 0; stencil_y < STENCIL_HEIGHT; stencil_y++) 
-                
-                {
-
-                    int mesh_index = (stencil_y - margin_y) * p_settings->mesh_width + (stencil_x - margin_x) + Ig;
-
-                    int stencil_index = stencil_y * STENCIL_WIDTH + stencil_x;
-
-                    sum += p_mesh[mesh_index] * stencil_coefs[stencil_index];
-                }
-            }
-
-            p_temporary_mesh[Ig] = sum;
-        }
-    }
-
-
-    //Copier le tableau p_temporary_mesh dans p_mesh
-    for (Ig = beg; Ig < end; ++Ig) 
-
+    // on a définit p_temporary_mesh avec des valeurs de 0 à len pour pouvoir reprendre notre indice d'origine et prendre la bonne valeur de p_mesh (avec Iorigine=Ig+ibeg+Itot)
+    int itot= (int)p_temporary_mesh[0];
+    for (int Ig = 0; Ig < len; Ig++)
     {
-        int r = Ig % p_settings->mesh_width;
-
-        if (r > margin_x - 1 && r < p_settings->mesh_width - margin_x) 
-
+        p_temporary_mesh[Ig]=p_mesh[Ig + itot+beg];
+        int r = (Ig +beg+ itot) % p_settings->mesh_width;
+        if (r > margin_x - 1 && r < p_settings->mesh_width)
         {
-
-            p_mesh[Ig] = p_temporary_mesh[Ig];
-
-        }
-
-    }
-
-    free(p_temporary_mesh);
-}
-//___________Dans cette version, on teste l'utilisation de du registre mask pour effectuer le calcul__________!!
-//Cette version prend beaucoup plus de temps par rapport de temps par rapport à la version naive 
-
-static void avx2_stencil_func1(ELEMENT_TYPE *p_mesh, struct s_settings *p_settings)
-{
-        const int margin_x = (STENCIL_WIDTH - 1) / 2;
-        const int margin_y = (STENCIL_HEIGHT - 1) / 2;
-        
-
-        int size_temp = p_settings->mesh_width * p_settings->mesh_height * sizeof(*p_mesh);
-        ELEMENT_TYPE *p_temporary_mesh =malloc(size_temp * sizeof(float));
-         
-        const int beg = margin_x + margin_y * p_settings->mesh_width;
-
-        //const int end = p_settings->mesh_width * p_settings->mesh_height - beg;
-        const int end =  p_settings->mesh_width * (p_settings->mesh_height - margin_y) - margin_x; 
-
-        int Ig;
-
-
-        for (Ig = beg ; Ig < end ; Ig++)
-        {
-
-            int r = Ig % p_settings->mesh_width;
-
-            if (r > margin_x-1 && r < p_settings->mesh_width-margin_x)
-
-            {
-
-            //Définir le masque 
-            __m256i mask = _mm256_setr_epi32(-20, 72, 48, 9, 100, 3, 5, 8);
-
-            //
-            __m256 reg_value = _mm256_maskload_ps((float *)&p_mesh[Ig], mask);
-
+            ELEMENT_TYPE value = p_mesh[Ig +beg+ itot];
             int stencil_x, stencil_y;
 
             for (stencil_x = 0; stencil_x < STENCIL_WIDTH; stencil_x++)
+            {
+                for (stencil_y = 0; stencil_y < STENCIL_HEIGHT; stencil_y++)
                 {
-                    for (stencil_y = 0; stencil_y < STENCIL_HEIGHT; stencil_y++)
-                        { 
-                            int mesh_index = (stencil_y - margin_y) * p_settings->mesh_width + (stencil_x - margin_x) + Ig;
-
-                            int coef_index = stencil_y * STENCIL_WIDTH + stencil_x;
-
-                            __m256 mesh_values = _mm256_maskload_ps((float *)&p_mesh[mesh_index], mask);
-
-                            __m256 coef_values = _mm256_maskload_ps((float *)&stencil_coefs[coef_index], mask);
-
-                            __m256 result = _mm256_mul_ps(mesh_values, coef_values);
-
-                            //__m256 reg2_value;
-                             // reg2_value = _mm256_loadu_ps(reg1_value);
-                              reg_value = _mm256_add_ps(result, reg_value);
-                        }
+                    value += p_mesh[(stencil_y - margin_y) * p_settings->mesh_width + (stencil_x - margin_x) + Ig+beg + itot] * stencil_coefs[stencil_y * STENCIL_WIDTH + stencil_x];
                 }
-                 
-                _mm256_storeu_ps(&p_temporary_mesh[Ig], reg_value);
-
             }
+            p_temporary_mesh[Ig] = value;
         }
+    }
+}
 
+// On définit notre kernel qui est appelé dans notre codelet
+void stencil_starpu_kernel(void *buffers[], void *cl_args)
+{
+    struct starpu_vector_interface *vector_handle = buffers[0];
+    struct starpu_vector_interface *vector_handle_temp = buffers[1];
+    ELEMENT_TYPE *p_mesh = (ELEMENT_TYPE *)STARPU_VECTOR_GET_PTR(vector_handle);
+    ELEMENT_TYPE *p_temporary_mesh = (ELEMENT_TYPE *)STARPU_VECTOR_GET_PTR(vector_handle_temp);
+    int len = (int)STARPU_VECTOR_GET_NX(vector_handle_temp);
+    // on extrait les arguments
+    struct s_settings *p_settings;
+    
+    starpu_codelet_unpack_args(cl_args, &p_settings);
+        /// appel de la fonction qui fait les operations sur les blocs
+    operation(p_temporary_mesh, p_mesh, p_settings, len);
+}
+
+// definition de notre codelet
+struct starpu_codelet stencil_codelet =
+    {
+        .cpu_funcs = {stencil_starpu_kernel},
+        .nbuffers = 2,                       // 2 buffers p_mesh et des blocs de p_mesh_temp 
+        .modes = {STARPU_R, STARPU_RW},   // P_mesh est read-only pour optimiser les conflits de lecture, output buffer est Read-Write car on lit les valeurs de nos indices et on les remplaces par la valeurs calculé
+};
+
+
+
+
+
+
+//la fonction qui est appelé dans chaque boucle du nouveau run(pour eviter de unregister et register et definir notre partitionnement a chaque boucle et donc gagner en temps de calcul)
+void parallel_stencil_func(ELEMENT_TYPE* restrict p_mesh,ELEMENT_TYPE* restrict p_temporary_mesh, struct s_settings *p_settings, starpu_data_handle_t *handle_mesh,starpu_data_handle_t *sub_x_handles,int len)
+{
+    
+    const int margin_x = (STENCIL_WIDTH - 1) / 2;
+    const int margin_y = (STENCIL_HEIGHT - 1) / 2;
+    const int beg = margin_x + margin_y * p_settings->mesh_width;
+
+    int nb_parts = p_settings->parts;
+
+
+    // crée nb_part (vous pouvez le changer soit avec --nb_part lors de l'execution ou en haut du code dans une macro)
+    for (int i = 0; i < nb_parts; i++)
+    {
+      
+        starpu_task_insert(&stencil_codelet, STARPU_R, handle_mesh[0], STARPU_RW, sub_x_handles[i], STARPU_VALUE, &p_settings, sizeof(p_settings),0);
+
+    }
+
+        // on attend que tout les taches finissent leur calcul pour regrouper notre vecteur
+    starpu_task_wait_for_all();
+
+// On avait 3 choix ici soit de faire le boucle commenter ci-dessous naive soit de créer des taches StarPu 
+//et la meilleur options qu'on a estimé et de parcourir les lignes et copier rapidement avec memcpy notre ligne
+
+ /*  
+    for (int x = margin_x; x < p_settings->mesh_width - margin_x; x++) {
+        for (int y = margin_y; y < p_settings->mesh_height - margin_y; y++) {
+            p_mesh[y * p_settings->mesh_width + x] = p_temporary_mesh[y * p_settings->mesh_width + x - beg];
+        }
+    }
+*/
+
+
+for (int y = margin_y; y < p_settings->mesh_height - margin_y; y++) {
         
-        for (Ig = beg ; Ig < end ; Ig++)
+            memcpy(&p_mesh[(y * p_settings->mesh_width)+margin_x],&p_temporary_mesh[y * p_settings->mesh_width+margin_x- beg],(p_settings->mesh_width-(2*margin_x))*sizeof(ELEMENT_TYPE));
+        
+    }
+
+
+
+    
+}
+
+
+
+
+
+
+
+
+// ________________Modification du run pour StarPu
+static void run_starpu(ELEMENT_TYPE *p_mesh,ELEMENT_TYPE *p_temporary_mesh, struct s_settings *p_settings,int len)
+{
+    int nb_parts = p_settings->parts;
+    // On crée un nouveau p_temporary_mesh1 pour pouvoir copier p_mesh rapidement à chaque boucle on utilise plus de memoire mais ca reste plus aventageux
+    ELEMENT_TYPE *p_temporary_mesh1 = malloc((len) * sizeof(*p_temporary_mesh1));
+    for (int i = 0; i < len; i++) {
+        p_temporary_mesh1[i] = i;
+    }
+
+    // On crée nos handle et on enregistre nos données dans les registres de StarPu
+    starpu_data_handle_t handle_mesh[2];
+	starpu_vector_data_register(&handle_mesh[0], STARPU_MAIN_RAM, (uintptr_t)p_mesh, p_settings->mesh_width * p_settings->mesh_height, sizeof(p_mesh[0]));
+    starpu_vector_data_register(&handle_mesh[1], STARPU_MAIN_RAM, (uintptr_t)p_temporary_mesh, len , sizeof(p_mesh[0]));
+
+    // On définit le filtre pour partitionner les taches
+    struct starpu_data_filter f_part =
         {
-                int r = Ig % p_settings->mesh_width;
-                if (r > margin_x-1 && r < p_settings->mesh_width - margin_x)
+            .filter_func = starpu_vector_filter_block,
+            .nchildren = nb_parts,
+        };
+        //On partitionne
+    starpu_data_handle_t sub_x_handles[nb_parts];
+    starpu_data_partition_plan(handle_mesh[1], &f_part, sub_x_handles);
+    starpu_data_partition_submit(handle_mesh[1], nb_parts, sub_x_handles);
+        int i;
+        for (i = 0; i < p_settings->nb_iterations; i++)
+        {
+                // Comme on l'as mentionner on copie nos données rapidement à chaque itération
+                memcpy(p_temporary_mesh,p_temporary_mesh1,len*sizeof(ELEMENT_TYPE));
+                // On calcule avec la fonction qu'on a définit a la place du naive
+                parallel_stencil_func(p_mesh,p_temporary_mesh, p_settings, handle_mesh,sub_x_handles,len );
+
+                if (p_settings->enable_output)
                 {
-                p_mesh[Ig] = p_temporary_mesh[Ig];
+                        char filename[32];
+                        snprintf(filename, 32, "run_mesh_%03d.csv", i);
+                        FILE *file = fopen(filename, "w");
+                        if (file == NULL)
+                        {
+                                perror("fopen");
+                                exit(EXIT_FAILURE);
+                        }
+                        write_mesh_to_file(file, p_mesh, p_settings);
+                        fclose(file);
+                }
+
+                if (p_settings->enable_verbose)
+                {
+                        printf("mesh after iteration %d\n", i);
+                        print_mesh(p_mesh, p_settings);
+                        printf("\n\n");
                 }
         }
+        // Le travail pour cette repetition est fini on désalloue les mémoires
+    starpu_data_unpartition_submit(handle_mesh[1], nb_parts, sub_x_handles, -1);
+    starpu_data_partition_clean(handle_mesh[1], nb_parts, sub_x_handles);
+    //free(sub_x_handles);
+    //free(handle_mesh);
+    //starpu_data_unregister(handle_mesh);
+	//starpu_data_unregister(p_temporary_mesh);
+ 
+        starpu_data_unregister(handle_mesh[0]);
 
+
+    free(p_temporary_mesh1);
 }
+//______________________________ Fin starPu________________ on a fait quelques modif en main aussi
+
 
 
 static void run(ELEMENT_TYPE *p_mesh, struct s_settings *p_settings)
@@ -768,12 +726,8 @@ static void run(ELEMENT_TYPE *p_mesh, struct s_settings *p_settings)
         int i;
         for (i = 0; i < p_settings->nb_iterations; i++)
         {
-                //naive_stencil_func(p_mesh, p_settings);   // La version originale
-                //optimized_stencil_func(p_mesh, p_settings); // Simplification des boucle for 
-                //simd_avx2(p_mesh, p_settings); //marche que lorsuqe le condition (end-beg) % REG_NB_ELEMENTS est vérifée, il faut donc que mw * (mh - 2)% 2 == 0
-                //func_simd_avx2(p_mesh, p_settings); //La bonne version pour avx2 mais un probleme de précision se présente lorsque j'utilise par exemple 17 * 19
-                //avx2_stencil_func1(p_mesh, p_settings);
-                //
+                naive_stencil_func(p_mesh, p_settings);
+
                 if (p_settings->enable_output)
                 {
                         char filename[32];
@@ -797,8 +751,15 @@ static void run(ELEMENT_TYPE *p_mesh, struct s_settings *p_settings)
         }
 }
 
+
+
+
+
+
+
 static int check(const ELEMENT_TYPE *p_mesh, ELEMENT_TYPE *p_mesh_copy, struct s_settings *p_settings)
 {
+    
         int i;
         for (i = 0; i < p_settings->nb_iterations; i++)
         {
@@ -856,10 +817,30 @@ int main(int argc, char *argv[])
 
         ELEMENT_TYPE *p_mesh = NULL;
         allocate_mesh(&p_mesh, p_settings);
-
+        
+        
         ELEMENT_TYPE *p_mesh_copy = NULL;
         allocate_mesh(&p_mesh_copy, p_settings);
+        int ret;
 
+// Je défini directement p_temporary_mesh et je l'ajoute dans les arguments pour ne pas l'allouer et le desallouer a chaque itération
+    const int margin_x = (STENCIL_WIDTH - 1) / 2;
+    const int margin_y = (STENCIL_HEIGHT - 1) / 2;
+    const int beg = margin_x + margin_y * p_settings->mesh_width;
+
+    const int end = p_settings->mesh_width * (p_settings->mesh_height - margin_y) - margin_x;
+    const int len = end - beg + 1;
+    
+
+    ELEMENT_TYPE *p_temporary_mesh = malloc((len) * sizeof(*p_temporary_mesh));
+    // On initialise starpu
+	ret = starpu_init(NULL);
+    if (ret != 0)
+	{
+		exit(EXIT_FAILURE);
+	}
+
+	
         {
                 if (!p_settings->enable_verbose)
                 {
@@ -886,13 +867,27 @@ int main(int argc, char *argv[])
                         }
 
                         struct timespec timing_start, timing_end;
-                        clock_gettime(CLOCK_MONOTONIC, &timing_start);
-                        run(p_mesh, p_settings);
-                        clock_gettime(CLOCK_MONOTONIC, &timing_end);
+                        // on a définit une fonction run differente pour starpu donc on change les run
+                        switch(p_settings->vcode) {
+                                case starpu:
+                                        clock_gettime(CLOCK_MONOTONIC, &timing_start);
+                                        run_starpu(p_mesh,p_temporary_mesh, p_settings,len);
+                                        clock_gettime(CLOCK_MONOTONIC, &timing_end);
+                                        break;
+                                case naive:
+                                        clock_gettime(CLOCK_MONOTONIC, &timing_start);
+                                        run(p_mesh, p_settings);
+                                        clock_gettime(CLOCK_MONOTONIC, &timing_end);
+                                        break;
+                        }
+                        
                         double timing_in_seconds = (timing_end.tv_sec - timing_start.tv_sec) + 1.0e-9 * (timing_end.tv_nsec - timing_start.tv_nsec);
-
-                        int check_status = check(p_mesh, p_mesh_copy, p_settings);
-
+                        // on verifie pas si verif==0
+                        int check_status=0;
+                        if(p_settings->verif==1){
+                        
+                        check_status = check(p_mesh, p_mesh_copy, p_settings);
+                        }
                         if (p_settings->enable_verbose)
                         {
                                 print_csv_header();
@@ -903,98 +898,11 @@ int main(int argc, char *argv[])
                         printf("\n");
                 }
         }
-
+    
+    delete_mesh(&p_temporary_mesh);
         delete_mesh(&p_mesh_copy);
         delete_mesh(&p_mesh);
         delete_settings(&p_settings);
-
+        starpu_shutdown();
         return 0;
 }
-
-
-/*static void avx2_stencil_func1(ELEMENT_TYPE *p_mesh, struct s_settings *p_settings)
-{
-        const int margin_x = (STENCIL_WIDTH - 1) / 2;
-        const int margin_y = (STENCIL_HEIGHT - 1) / 2;
-        
-        int size_temp = p_settings->mesh_width * p_settings->mesh_height * sizeof(*p_mesh);
-        const int vector_size = size_temp / sizeof(ELEMENT_TYPE);
-
-        ELEMENT_TYPE *aligned_p_mesh = aligned_alloc(REG_BYTES, size_temp);
-        ELEMENT_TYPE *p_temporary_mesh = aligned_alloc(REG_BYTES, size_temp);
-
-        int i;
-
-        for (int i = 0; i < vector_size ; i++) 
-        {
-                aligned_p_mesh[i] = p_mesh[i];
-        }
-        
-
-        const int beg = margin_x + margin_y * p_settings->mesh_width;
-
-        //const int end = p_settings->mesh_width * p_settings->mesh_height - beg;
-        const int end =  p_settings->mesh_width * (p_settings->mesh_height - margin_y) - margin_x; 
-
-        int Ig;
-
-        //Définir le masque
-        //__m256i mask = _mm256_setr_epi32(-1, 1, 1, 1, 1, 1, 1, 1);
-
-        for (Ig = beg ; Ig < end ; Ig+= REG_NB_ELEMENTS)
-        {
-
-            int r = Ig % p_settings->mesh_width;
-
-            if (r > margin_x-1 && r < p_settings->mesh_width )
-
-            {
-
-            __m256 reg_value = _mm256_load_ps(&p_mesh[Ig]);
-
-            
-            int stencil_x, stencil_y;
-
-            for (stencil_x = 0; stencil_x < STENCIL_WIDTH; i+=REG_NB_ELEMENTS)
-                {
-                    for (stencil_y = 0; stencil_y < STENCIL_HEIGHT; i+=REG_NB_ELEMENTS)
-                        { 
-                            int mesh_index = (stencil_y - margin_y) * p_settings->mesh_width + (stencil_x - margin_x) + Ig;
-                            int coef_index = stencil_y * STENCIL_WIDTH + stencil_x;
-                            __m256 mesh_values = _mm256_load_ps(&aligned_p_mesh[mesh_index]);
-                            __m256 coef_values = _mm256_load_ps(&stencil_coefs[coef_index]);
-                            __m256 result = _mm256_mul_ps(mesh_values, coef_values);
-                            //__m256 reg2_value;
-                             // reg2_value = _mm256_loadu_ps(reg1_value);
-                              reg_value = _mm256_add_ps(result, reg_value);
-                        }
-                }
-                 
-                _mm256_store_ps(&p_temporary_mesh[Ig], reg_value);
-
-            }
-        }
-
-        //_m256 p_temporary = _mm256_load_ps(&p_temporary_mesh)
-
-        //#pragma omp parallel for
-        //Il me reste à vectoriser cette boucle
-        for (Ig = beg ; Ig < end ; Ig++)
-        {
-                int r = Ig % p_settings->mesh_width;
-                if (r > margin_x-1 && r < p_settings->mesh_width - margin_x)
-                {
-                        aligned_p_mesh[Ig] = p_temporary_mesh[Ig];
-                }
-        }
-
-        for (int i = 0; i < vector_size; i++) {
-        p_mesh[i] = aligned_p_mesh[i];
-       }
-        free(p_temporary_mesh);
-
-
-}*/
-
-
-
