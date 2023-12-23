@@ -4,7 +4,7 @@
 
 Ce code implémente un calcul de type stencil sur un tableau à deux dimensions. Le calcul stencil est utilisé dans les simulations scientifiques pour modéliser des phénomènes décrits par des équations aux dérivées partielles. Ce programme effectue des itérations sur un tableau, appliquant à chaque valeur et à son voisinage un motif de calcul spécifique.
 
-L'objectif du projet est d'améliorer les performances de ce code de calcul, en utilisant **SIMD AVX2** basé sur la vectorisation et **StarPU** basé sur la parallélisation par division de tâches.
+L'objectif du projet est d'améliorer les performances de ce code de calcul, en utilisant **SIMD AVX2** basé sur la vectorisation et **StarPU** basées sur parallélisme par division de tâches.
 
 ## Versions améliorées
 Le but de ce projet est de coder plusieurs versions améliorées de la fonction `naive_stencil_func()`.
@@ -47,7 +47,13 @@ Pour exécuter le programme avec une largeur de 2000, une hauteur de 1000, 10 it
 \```
 
 ## Principaux résultats obtenus
-On calcule le temps d'exécution pour **mesh_width = 5050**, **mesh_height = 3062**, **Nombre de partitions de StarPU = 24** et avec 10 répétitions.
+On calcule le temps d'exécution avec les paramètres suivants:
+- **mesh_width = 5050**.
+- **mesh_height = 3062**.
+- **Nombre de partitions de StarPU = 24**. 
+- **10 répétitions**.
+![Texte alternatif](histogramme.png)
+
 
 
 
