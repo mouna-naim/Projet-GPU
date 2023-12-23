@@ -1,0 +1,3 @@
+module load compiler/gcc/11.2.0 hardware/hwloc/2.5.0 runtime/starpu/1.3.8/1.3.8/mpi mpi/openmpi/4.1.5 runtime/starpu/1.3.8/mpi runtime/starpu/1.3.8/simgrid
+
+module list
