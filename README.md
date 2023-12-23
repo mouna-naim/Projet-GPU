@@ -46,6 +46,11 @@ Pour exécuter le programme avec une largeur de 2000, une hauteur de 1000, 10 it
 \"" ./stencil_fusion --nb-iterations 10 --mesh-width 4000 --mesh-height 1000 --verification 1 --version starpu_nvx --taskpart 1
 \```
 
+## Principaux résultats obtenus
+On calcule le temps d'exécution pour **mesh_width = 5050**, **mesh_height = 3062**, **Nombre de partitions de StarPU = 24** et avec 10 répétitions.
+
+
+
 
 ## Auteurs
 
