@@ -60,5 +60,5 @@ On calcule le temps d'exécution avec les paramètres suivants:
 
 ## Auteurs
 
-- **NAIM Mouna**  - mnaim@bordeaux-inp.fr
-- **REDOUANE Mohamed Youssef**   - mredouane@enseirb-matmeca.fr
+- **NAIM Mouna** 
+- **REDOUANE Mohamed Youssef**   
