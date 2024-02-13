@@ -1,5 +1,6 @@
 PRG = stencil_fusion
 
+
 CFLAGS = -g -Wall
 CFLAGS += -march=native -mavx2
 
